@@ -1,0 +1,47 @@
+name: Update LLM Models List
+
+on:
+  # 1. Run on a schedule (every 6 hours)
+  schedule:
+    - cron: '0 */6 * * *'
+  # 2. Allow manual runs from the Actions tab in GitHub
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-models:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run update script
+        # The script is now at the root of this new repository
+        run: python update_models.py
+        env:
+          # Pass the secret to the script as an environment variable
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Publish to the 'gh-pages' branch
+          publish_branch: gh-pages
+          # The models.json file is in the root
+          publish_dir: .
+          # Commit author
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          # This option creates a clean branch containing only models.json
+          force_orphan: true

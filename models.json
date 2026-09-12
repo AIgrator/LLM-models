@@ -1,0 +1,11 @@
+{
+  "openrouter": {
+    "display_name": "OpenRouter",
+    "models_by_provider": {
+      "Meta": [
+        "muse-glimmer-30b",
+        "muse-glimmer-30b:batch"
+      ]
+    }
+  }
+}

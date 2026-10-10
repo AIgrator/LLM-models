@@ -90,6 +90,16 @@ STATIC_OPENROUTER_GROUPS = {
     "X-AI": ["grok-4-1-fast-reasoning"],
     "Meta": ["muse-glimmer-30b"],
 }
+# Hugging Face Router models are NOT in the OpenRouter catalogue, so they are
+# curated statically. Suffix ":provider" pins the inference provider;
+# ids without suffix are auto-routed by HF.
+STATIC_HUGGINGFACE_MODELS = [
+    "Qwen/Qwen3.8-27B:novita",
+    "Qwen/Qwen2.5-VL-3B-Instruct",
+    "openai/gpt-oss-120b",
+    "zai-org/GLM-4.5V",
+    "meta-llama/Llama-3.1-8B-Instruct",
+]
 
 # --- Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -338,6 +348,12 @@ def update_model_list():
     or_groups = structured_data["openrouter"]["models_by_provider"]
     for grp, fallback_models in STATIC_OPENROUTER_GROUPS.items():
         or_groups[grp] = sorted(set(or_groups.get(grp, [])) | set(fallback_models))
+
+    # Hugging Face Router section is fully static (separate catalogue).
+    structured_data["huggingface"] = {
+        "display_name": "Hugging Face",
+        "models": sorted(STATIC_HUGGINGFACE_MODELS),
+    }
 
     # --- Validate before writing: refuse junk (fewer than 2 usable providers) ---
     usable = 0

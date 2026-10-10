@@ -254,9 +254,18 @@ def update_model_list():
                     "models": []
                 }
 
-            direct_api_name = get_direct_api_model_name(model)
-            if _is_clean_name(direct_api_name):
-                structured_data[direct_key]["models"].append(direct_api_name)
+            if provider_id == 'x-ai':
+                # xAI direct API ids are stable and short ("grok-4", ...).
+                # OpenRouter canonical_slugs carry date pins ("grok-4.5-20260708")
+                # that are NOT valid on the x.ai API, so dynamic names are
+                # skipped here on purpose. Fresh grok variants still land in
+                # the "X-AI" OpenRouter group below; the static list (merged
+                # later) is the source of truth for direct calls.
+                pass
+            else:
+                direct_api_name = get_direct_api_model_name(model)
+                if _is_clean_name(direct_api_name):
+                    structured_data[direct_key]["models"].append(direct_api_name)
 
         # 2. Populate OpenRouter's nested structure using the standard id
         openrouter_group = mapping.get('openrouter_group')

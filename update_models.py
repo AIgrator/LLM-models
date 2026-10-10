@@ -18,13 +18,18 @@ OUTPUT_FILE = PROJECT_ROOT / "models.json"
 # This map now serves as a reliable fallback if the x.ai API cannot be reached
 # or if no API key is provided.
 XAI_DIRECT_API_FALLBACK_MAP = {
-    "grok-4": ["grok-4-0709"],
-    "grok-4-fast": ["grok-4-fast-reasoning", "grok-4-fast-non-reasoning"]
+    "grok-4": ["grok-4", "grok-4-0709"],
+    "grok-4-fast": ["grok-4-fast-reasoning", "grok-4-fast-non-reasoning"],
+    "grok-4-1-fast-reasoning": ["grok-4-1-fast-reasoning"],
+    "grok-4-fast-reasoning": ["grok-4-fast-reasoning"],
 }
 
 # --- Step 1: Technical Filters ---
-# We only want multimodal models that can process both text and images.
-REQUIRED_MODALITY = "text+image->text"
+# We want multimodal models that can process text and images. OpenRouter used
+# to report exactly "text+image->text", but flagship models now report extended
+# modalities like "text+image+file->text" or "text+image+file+audio+video->text".
+# So we check the modality *prefix* instead of exact equality.
+REQUIRED_MODALITY_PREFIX = "text+image"
 
 # --- Step 2: Name-based Filters (Regular Expressions) ---
 # These patterns help exclude temporary, preview, or specialized models.
@@ -39,11 +44,13 @@ SPECIALIZED_PATTERN = re.compile(r'\b(codex|code|sql|translate|thinking)\b', re.
 # A whitelist of providers to focus on high-quality, well-known models.
 ALLOWED_PROVIDERS = {'anthropic', 'google', 'openai', 'mistral', 'meta', 'x-ai'}
 # A minimum context length to filter out older or less capable models.
-MIN_CONTEXT_LENGTH = 100000
-# A crucial filter: the model MUST support these parameters to be controllable
-# by our application for structured output and tool use.
+MIN_CONTEXT_LENGTH = 32000
+# The model MUST support these parameters to be controllable by our
+# application for structured output and tool use. NOTE: "reasoning" was
+# dropped — it killed almost every flagship model (gemini/gpt-5/gemma have
+# tools+tool_choice but not always "reasoning"), and reasoning is a
+# nice-to-have, not a requirement for tool calling.
 REQUIRED_PARAMETERS = {
-    "reasoning",
     "tool_choice",
     "tools",
 }
@@ -58,6 +65,25 @@ REQUIRED_PARAMETERS = {
 FORCE_INCLUDE = set()
 # Models in this list will be removed from the final list, even if they passed all filters.
 FORCE_EXCLUDE = set()
+
+# --- Static fallbacks: known-good models per direct provider. ---
+# The OpenRouter catalogue changes constantly (ids get renamed/removed, e.g.
+# anthropic/claude-sonnet-4-5 and x-ai/grok-4-fast are currently absent), so
+# the dynamic result is ALWAYS merged with these. Guarantees the output never
+# collapses to a single junk entry again.
+STATIC_DIRECT_MODELS = {
+    "google": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    "openai": ["gpt-5-mini", "gpt-5", "gpt-5-nano"],
+    "anthropic": ["claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-1"],
+    "x-ai": ["grok-4-fast-reasoning", "grok-4-1-fast-reasoning", "grok-4"],
+}
+STATIC_OPENROUTER_GROUPS = {
+    "Anthropic": ["claude-sonnet-4-5", "claude-haiku-4-5"],
+    "Google": ["gemini-2.5-flash", "gemini-2.5-pro"],
+    "OpenAI": ["gpt-5-mini", "gpt-5"],
+    "X-AI": ["grok-4-1-fast-reasoning"],
+    "Meta": ["muse-glimmer-30b"],
+}
 
 # --- Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -150,7 +176,7 @@ def update_model_list():
         if not model_id:
             continue
 
-        if model.get('architecture', {}).get('modality') != REQUIRED_MODALITY:
+        if not model.get('architecture', {}).get('modality', '').startswith(REQUIRED_MODALITY_PREFIX):
             continue
         if DATE_PATTERN.search(model_id) or PREVIEW_PATTERN.search(model_id) or SPECIALIZED_PATTERN.search(model_id):
             continue
@@ -220,6 +246,18 @@ def update_model_list():
         'meta': {'openrouter_group': 'Meta'}
     }
 
+    def _is_clean_name(name: str) -> bool:
+        """Drops :batch variants, dated snapshots and test/build ids from the
+        *output* (the input filter works on OpenRouter ids, but direct API
+        names derived from canonical_slug can reintroduce dates)."""
+        if not name or ":batch" in name:
+            return False
+        if DATE_PATTERN.search(name):
+            return False
+        if re.search(r'\b(build|tryme|test)\b', name, re.IGNORECASE):
+            return False
+        return True
+
     structured_data = {
         "openrouter": {
             "display_name": "OpenRouter",
@@ -248,21 +286,45 @@ def update_model_list():
                 structured_data[direct_key]["models"] = sorted(list(set(xai_direct_models)))
             else:
                 direct_api_name = get_direct_api_model_name(model)
-                structured_data[direct_key]["models"].append(direct_api_name)
+                if _is_clean_name(direct_api_name):
+                    structured_data[direct_key]["models"].append(direct_api_name)
 
         # 2. Populate OpenRouter's nested structure using the standard id
         openrouter_group = mapping.get('openrouter_group')
         if openrouter_group:
             if openrouter_group not in structured_data["openrouter"]["models_by_provider"]:
                 structured_data["openrouter"]["models_by_provider"][openrouter_group] = []
-            
+
             model_name = model.get('id').split('/')[-1]
-            structured_data["openrouter"]["models_by_provider"][openrouter_group].append(model_name)
+            if _is_clean_name(model_name):
+                structured_data["openrouter"]["models_by_provider"][openrouter_group].append(model_name)
 
     # --- Final Cleanup: Remove duplicates from direct provider lists ---
     for provider_key, provider_data in structured_data.items():
         if provider_key != 'x-ai' and 'models' in provider_data:
             provider_data['models'] = sorted(list(set(provider_data['models'])))
+
+    # --- Merge static fallbacks so output is never empty/junk ---
+    # Dynamic catalogue ids change constantly; statics guarantee usability.
+    for direct_key, fallback_models in STATIC_DIRECT_MODELS.items():
+        if direct_key not in structured_data:
+            structured_data[direct_key] = {"display_name": direct_key.title(), "models": []}
+        merged = sorted(set(structured_data[direct_key].get("models", [])) | set(fallback_models))
+        structured_data[direct_key]["models"] = merged
+    or_groups = structured_data["openrouter"]["models_by_provider"]
+    for grp, fallback_models in STATIC_OPENROUTER_GROUPS.items():
+        or_groups[grp] = sorted(set(or_groups.get(grp, [])) | set(fallback_models))
+
+    # --- Validate before writing: refuse junk (fewer than 2 usable providers) ---
+    usable = 0
+    for _pid, info in structured_data.items():
+        total = len(info.get("models", []) or [])
+        total += sum(len(v) for v in (info.get("models_by_provider", {}) or {}).values() if isinstance(v, list))
+        if total > 0:
+            usable += 1
+    if usable < 2:
+        logging.error(f"Generated data looks like junk ({usable} usable providers), NOT writing {OUTPUT_FILE}.")
+        return
 
     # --- Save to File ---
     try:

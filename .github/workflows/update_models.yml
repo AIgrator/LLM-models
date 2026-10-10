@@ -26,11 +26,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run update script
-        # The script is now at the root of this new repository
+        # The script is now at the root of this new repository.
+        # No API keys needed: all data comes from the public OpenRouter catalogue.
         run: python update_models.py
-        env:
-          # Pass the secret to the script as an environment variable
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3

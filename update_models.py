@@ -3,26 +3,17 @@ import re
 import requests
 import logging
 from pathlib import Path
-import os
 
 # --- Configuration: All filtering rules are defined here for easy tuning ---
 
 # The URL for fetching the list of all models from the OpenRouter API.
+# NOTE: xAI models come from this same catalogue (provider "x-ai") —
+# no separate x.ai API polling is needed anymore.
 API_URL = "https://openrouter.ai/api/v1/models"
-XAI_API_URL = "https://api.x.ai/v1/models"
 
 # Define project root and paths. In this new repo, the script is at the root.
 PROJECT_ROOT = Path(__file__).parent
 OUTPUT_FILE = PROJECT_ROOT / "models.json"
-
-# This map now serves as a reliable fallback if the x.ai API cannot be reached
-# or if no API key is provided.
-XAI_DIRECT_API_FALLBACK_MAP = {
-    "grok-4": ["grok-4", "grok-4-0709"],
-    "grok-4-fast": ["grok-4-fast-reasoning", "grok-4-fast-non-reasoning"],
-    "grok-4-1-fast-reasoning": ["grok-4-1-fast-reasoning"],
-    "grok-4-fast-reasoning": ["grok-4-fast-reasoning"],
-}
 
 # --- Step 1: Technical Filters ---
 # We want multimodal models that can process text and images. OpenRouter used
@@ -138,40 +129,10 @@ def get_direct_api_model_name(model):
     # specific version from the slug.
     return base_slug_name
 
-def get_xai_api_key():
-    """
-    Reads the x.ai API key from the environment variable.
-    """
-    api_key = os.getenv("XAI_API_KEY")
-    if api_key:
-        logging.info("Found x.ai API key in environment variable.")
-    else:
-        logging.warning("XAI_API_KEY environment variable not found.")
-    return api_key
-
-def fetch_xai_models_from_api(api_key):
-    """
-    Fetches the list of models directly from the x.ai API.
-    Returns a list of model IDs on success, or None on failure.
-    """
-    if not api_key:
-        return None
-    logging.info("Attempting to fetch model list from x.ai API...")
-    try:
-        headers = {"Authorization": f"Bearer {api_key}"}
-        response = requests.get(XAI_API_URL, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json().get('data', [])
-        model_ids = [model['id'] for model in data]
-        logging.info(f"Successfully fetched {len(model_ids)} models from x.ai API.")
-        return model_ids
-    except requests.RequestException as e:
-        logging.warning(f"Could not fetch models from x.ai API: {e}. No direct x.ai models will be added.")
-        return None
-
 def update_model_list():
     """
-    Fetches models from OpenRouter, filters them, and resolves x.ai model names.
+    Fetches models from OpenRouter (including the "x-ai" provider entries),
+    filters them by capability, and writes the structured models.json.
     """
     logging.info("Starting model list update process...")
     
@@ -234,28 +195,6 @@ def update_model_list():
     final_models = [models_by_id[id] for id in final_model_ids if id in models_by_id]
     logging.info(f"Applied manual overrides. Final model count: {len(final_models)}")
 
-    # --- Dynamic x.ai Model Resolution ---
-    xai_api_key = get_xai_api_key()
-    live_xai_models = fetch_xai_models_from_api(xai_api_key)
-    
-    # Get the base names of x.ai models that passed our filters
-    approved_xai_base_names = {
-        m['id'].split('/')[-1] for m in final_models if m['id'].startswith('x-ai/')
-    }
-    
-    xai_direct_models = []
-    if live_xai_models:
-        # Match live models against approved base names
-        for live_model in live_xai_models:
-            for base_name in approved_xai_base_names:
-                if live_model.startswith(base_name):
-                    xai_direct_models.append(live_model)
-                    break
-    else:
-        logging.info("No x.ai API key found or API fetch failed. Using fallback map for direct x.ai models.")
-        for base_name in approved_xai_base_names:
-            xai_direct_models.extend(XAI_DIRECT_API_FALLBACK_MAP.get(base_name, []))
-
     # --- Structuring Logic ---
     # Explicit entries for native direct providers + friendly group names.
     # Any other provider that passed the capability filters gets an OpenRouter
@@ -314,14 +253,10 @@ def update_model_list():
                     "display_name": mapping['display_name'],
                     "models": []
                 }
-            
-            if provider_id == 'x-ai':
-                # x.ai models were resolved pre-loop
-                structured_data[direct_key]["models"] = sorted(list(set(xai_direct_models)))
-            else:
-                direct_api_name = get_direct_api_model_name(model)
-                if _is_clean_name(direct_api_name):
-                    structured_data[direct_key]["models"].append(direct_api_name)
+
+            direct_api_name = get_direct_api_model_name(model)
+            if _is_clean_name(direct_api_name):
+                structured_data[direct_key]["models"].append(direct_api_name)
 
         # 2. Populate OpenRouter's nested structure using the standard id
         openrouter_group = mapping.get('openrouter_group')
@@ -335,7 +270,7 @@ def update_model_list():
 
     # --- Final Cleanup: Remove duplicates from direct provider lists ---
     for provider_key, provider_data in structured_data.items():
-        if provider_key != 'x-ai' and 'models' in provider_data:
+        if 'models' in provider_data:
             provider_data['models'] = sorted(list(set(provider_data['models'])))
 
     # --- Merge static fallbacks so output is never empty/junk ---

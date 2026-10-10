@@ -195,7 +195,7 @@ def update_model_list():
         if model_id.endswith(':free'):
             continue
 
-        if provider == 'openai' and not model_id.startswith('openai/gpt-5'):
+        if provider == 'openai' and not re.match(r'openai/gpt-[5-9]', model_id):
             continue
 
         if provider == 'anthropic':

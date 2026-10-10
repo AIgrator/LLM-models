@@ -41,8 +41,14 @@ PREVIEW_PATTERN = re.compile(r'\b(preview|beta|test|dev|alpha|instruct)\b', re.I
 SPECIALIZED_PATTERN = re.compile(r'\b(codex|code|sql|translate|thinking)\b', re.IGNORECASE)
 
 # --- Step 3: Quality & Capability Filters ---
-# A whitelist of providers to focus on high-quality, well-known models.
-ALLOWED_PROVIDERS = {'anthropic', 'google', 'openai', 'mistral', 'meta', 'x-ai'}
+# NOTE: the old provider whitelist is gone on purpose. A year ago only ~5
+# providers had models capable of vision + structured JSON output; now many do
+# (Qwen, Zhipu, Kimi, DeepSeek, ByteDance, Xiaomi, Mistral, Llama, ...).
+# Selection is by *capability* (multimodal + tools/tool_choice + context),
+# not by brand. Direct API lists stay limited to our 4 native providers;
+# everything else lands in OpenRouter groups.
+# Blocklist for catalogue entries that are routers/aliases, not real models.
+BLOCKED_PROVIDERS = {'openrouter', 'typesafe'}
 # A minimum context length to filter out older or less capable models.
 MIN_CONTEXT_LENGTH = 32000
 # The model MUST support these parameters to be controllable by our
@@ -182,7 +188,11 @@ def update_model_list():
             continue
         
         provider = model_id.split('/')[0]
-        if provider not in ALLOWED_PROVIDERS:
+        # Skip router endpoints, mirror aliases (~) and :free variants —
+        # not real selectable models.
+        if provider in BLOCKED_PROVIDERS or provider.startswith('~'):
+            continue
+        if model_id.endswith(':free'):
             continue
 
         if provider == 'openai' and not model_id.startswith('openai/gpt-5'):
@@ -237,13 +247,26 @@ def update_model_list():
             xai_direct_models.extend(XAI_DIRECT_API_FALLBACK_MAP.get(base_name, []))
 
     # --- Structuring Logic ---
+    # Explicit entries for native direct providers + friendly group names.
+    # Any other provider that passed the capability filters gets an OpenRouter
+    # group automatically (display name derived from the provider id).
     PROVIDER_MAP = {
         'google': {'direct_key': 'google', 'display_name': 'Google', 'openrouter_group': 'Google'},
         'openai': {'direct_key': 'openai', 'display_name': 'OpenAI', 'openrouter_group': 'OpenAI'},
         'anthropic': {'direct_key': 'anthropic', 'display_name': 'Anthropic', 'openrouter_group': 'Anthropic'},
         'x-ai': {'direct_key': 'x-ai', 'display_name': 'xAI', 'openrouter_group': 'X-AI'},
-        'mistral': {'openrouter_group': 'Mistral'},
-        'meta': {'openrouter_group': 'Meta'}
+        'mistralai': {'openrouter_group': 'Mistral'},
+        'meta': {'openrouter_group': 'Meta'},
+        'meta-llama': {'openrouter_group': 'Meta'},
+        'qwen': {'openrouter_group': 'Qwen'},
+        'z-ai': {'openrouter_group': 'Zhipu'},
+        'moonshotai': {'openrouter_group': 'Moonshot'},
+        'deepseek': {'openrouter_group': 'DeepSeek'},
+        'bytedance-seed': {'openrouter_group': 'ByteDance'},
+        'xiaomi': {'openrouter_group': 'Xiaomi'},
+        'minimax': {'openrouter_group': 'MiniMax'},
+        'stepfun': {'openrouter_group': 'StepFun'},
+        'inclusionai': {'openrouter_group': 'InclusionAI'},
     }
 
     def _is_clean_name(name: str) -> bool:
@@ -268,9 +291,10 @@ def update_model_list():
     for model in sorted(final_models, key=lambda m: m.get('id')):
         provider_id = model.get('id').split('/')[0]
         mapping = PROVIDER_MAP.get(provider_id)
-        
         if not mapping:
-            continue
+            # Auto-group: any capable provider not listed explicitly still
+            # gets an OpenRouter group with a derived display name.
+            mapping = {'openrouter_group': provider_id.replace('-', ' ').title()}
 
         # 1. Populate direct provider lists
         direct_key = mapping.get('direct_key')

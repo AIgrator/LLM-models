@@ -255,13 +255,13 @@ def update_model_list():
                 }
 
             if provider_id == 'x-ai':
-                # xAI direct API ids are stable and short ("grok-4", ...).
-                # OpenRouter canonical_slugs carry date pins ("grok-4.5-20260708")
-                # that are NOT valid on the x.ai API, so dynamic names are
-                # skipped here on purpose. Fresh grok variants still land in
-                # the "X-AI" OpenRouter group below; the static list (merged
-                # later) is the source of truth for direct calls.
-                pass
+                # xAI direct API names match the OpenRouter id base
+                # ("grok-4.5", "grok-4.6", ...) per xAI docs — but NOT the
+                # canonical_slug ("grok-4.5-20260708"), which is an OpenRouter
+                # date pin invalid on the x.ai API. Hence id-base, not slug.
+                direct_api_name = model.get('id').split('/')[-1]
+                if _is_clean_name(direct_api_name):
+                    structured_data[direct_key]["models"].append(direct_api_name)
             else:
                 direct_api_name = get_direct_api_model_name(model)
                 if _is_clean_name(direct_api_name):

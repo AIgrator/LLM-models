@@ -159,12 +159,14 @@ def update_model_list():
             continue
         
         provider = model_id.split('/')[0]
-        # Skip router endpoints, mirror aliases (~) and :free variants —
-        # not real selectable models.
+        # Skip router endpoints and mirror aliases (~), not real models.
         if provider in BLOCKED_PROVIDERS or provider.startswith('~'):
             continue
-        if model_id.endswith(':free'):
-            continue
+        # NOTE: ':free' variants ARE real selectable models (first-class
+        # OpenRouter endpoints, just rate-limited). They pass the filters
+        # like any other id, but are only routed into OpenRouter groups —
+        # never into direct-API lists (native APIs don't know ':free').
+        # See the structuring loop below.
 
         if provider == 'openai' and not re.match(r'openai/gpt-[5-9]', model_id):
             continue
@@ -239,15 +241,17 @@ def update_model_list():
 
     for model in sorted(final_models, key=lambda m: m.get('id')):
         provider_id = model.get('id').split('/')[0]
+        is_free_variant = model.get('id').endswith(':free')
         mapping = PROVIDER_MAP.get(provider_id)
         if not mapping:
             # Auto-group: any capable provider not listed explicitly still
             # gets an OpenRouter group with a derived display name.
             mapping = {'openrouter_group': provider_id.replace('-', ' ').title()}
 
-        # 1. Populate direct provider lists
+        # 1. Populate direct provider lists (never ':free' ids —
+        # native APIs don't serve that suffix; it is OpenRouter-only).
         direct_key = mapping.get('direct_key')
-        if direct_key:
+        if direct_key and not is_free_variant:
             if direct_key not in structured_data:
                 structured_data[direct_key] = {
                     "display_name": mapping['display_name'],

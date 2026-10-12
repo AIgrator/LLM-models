@@ -61,7 +61,11 @@ REQUIRED_PARAMETERS = {
 # ])
 FORCE_INCLUDE = set()
 # Models in this list will be removed from the final list, even if they passed all filters.
-FORCE_EXCLUDE = set()
+FORCE_EXCLUDE = {
+    # Reasoning model returns empty responses in practice (no usable
+    # text/tool_calls in agent loops) — verified in live testing, Oct 2026.
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+}
 
 # --- Static fallbacks: known-good models per direct provider. ---
 # The OpenRouter catalogue changes constantly (ids get renamed/removed, e.g.

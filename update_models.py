@@ -98,11 +98,15 @@ STATIC_HUGGINGFACE_MODELS = [
 
 # --- Step 5: Per-mode capabilities (consumed by the Logos app) ---
 # The app does not decide what a model can do; it just reads this block from
-# models.json. Each mode maps to the list of "provider::model" keys that can run
-# it (model key matches what Logos stores in settings.json; OpenRouter ids are
-# "group/model"). chat/terminal/browser hold every listed model (the filters
-# already require multimodal input + tools/tool_choice). vision is native
-# computer-use only, curated per vendor below.
+# models.json. There are only two groups:
+#   general - Chat, Terminal and Browser share the SAME requirements
+#             (multimodal input + tools/tool_choice, already enforced by the
+#             filters), so a model that fits one fits all. Keeping them as a
+#             single list prevents the requirements from drifting apart and
+#             producing a chat-only model that can't run terminal/browser.
+#   vision  - native computer use only, curated per vendor below.
+# Keys are "provider::model" (matching what Logos stores in settings.json;
+# OpenRouter ids are "group/model").
 CUA_PROVIDERS = {'openai', 'anthropic', 'google'}
 CUA_MODEL_PATTERNS = {
     'anthropic': r'^claude-',                                  # all current Claude models
@@ -112,13 +116,10 @@ CUA_MODEL_PATTERNS = {
 }
 
 
-def _supported_modes(capability_provider: str, model_name: str) -> list:
-    """Modes a model can run, given its underlying provider (lowercase id)."""
-    modes = ['chat', 'terminal', 'browser']
-    pattern = CUA_MODEL_PATTERNS.get(capability_provider)
-    if pattern and re.search(pattern, model_name.lower()):
-        modes.append('vision')
-    return modes
+def _is_vision_capable(provider_id: str, model_name: str) -> bool:
+    """Whether a directly-served model exposes native computer use."""
+    pattern = CUA_MODEL_PATTERNS.get(provider_id)
+    return bool(pattern and re.search(pattern, model_name.lower()))
 
 # --- Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -344,22 +345,22 @@ def update_model_list():
 
     # --- Per-mode capabilities block ---
     # Built after validation (it is not a provider entry). Keys are exactly the
-    # ids Logos stores, so the app can do an O(1) membership test per mode.
-    mode_caps = {mode: [] for mode in ('chat', 'terminal', 'browser', 'vision')}
+    # ids Logos stores, so the app can do an O(1) membership test per group.
+    mode_caps = {'general': [], 'vision': []}
     for provider_id, info in structured_data.items():
         if provider_id == 'openrouter':
             # OpenRouter is a router: the app does NOT drive computer use
-            # through it, so its models are never marked vision-capable even
-            # when the underlying model (Claude/GPT/Gemini) would be.
+            # through it, so its models are general-only even when the
+            # underlying model (Claude/GPT/Gemini) would be vision-capable.
             for group, models in (info.get('models_by_provider') or {}).items():
                 for name in models:
-                    key = f"openrouter::{group.lower()}/{name.lower().replace(' ', '-')}"
-                    for mode in ('chat', 'terminal', 'browser'):
-                        mode_caps[mode].append(key)
+                    mode_caps['general'].append(f"openrouter::{group.lower()}/{name.lower().replace(' ', '-')}")
         else:
             for name in (info.get('models') or []):
-                for mode in _supported_modes(provider_id, name):
-                    mode_caps[mode].append(f"{provider_id}::{name}")
+                key = f"{provider_id}::{name}"
+                mode_caps['general'].append(key)
+                if _is_vision_capable(provider_id, name):
+                    mode_caps['vision'].append(key)
     structured_data['mode_capabilities'] = {m: sorted(set(v)) for m, v in mode_caps.items()}
     logging.info("mode_capabilities: " + ", ".join(f"{m}={len(v)}" for m, v in mode_caps.items()))
 

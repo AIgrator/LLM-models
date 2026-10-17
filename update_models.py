@@ -348,11 +348,13 @@ def update_model_list():
     mode_caps = {mode: [] for mode in ('chat', 'terminal', 'browser', 'vision')}
     for provider_id, info in structured_data.items():
         if provider_id == 'openrouter':
+            # OpenRouter is a router: the app does NOT drive computer use
+            # through it, so its models are never marked vision-capable even
+            # when the underlying model (Claude/GPT/Gemini) would be.
             for group, models in (info.get('models_by_provider') or {}).items():
-                cap_provider = group.lower()
                 for name in models:
                     key = f"openrouter::{group.lower()}/{name.lower().replace(' ', '-')}"
-                    for mode in _supported_modes(cap_provider, name):
+                    for mode in ('chat', 'terminal', 'browser'):
                         mode_caps[mode].append(key)
         else:
             for name in (info.get('models') or []):

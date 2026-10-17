@@ -96,6 +96,30 @@ STATIC_HUGGINGFACE_MODELS = [
     "meta-llama/Llama-3.1-8B-Instruct",
 ]
 
+# --- Step 5: Per-mode capabilities (consumed by the Logos app) ---
+# The app does not decide what a model can do; it just reads this block from
+# models.json. Each mode maps to the list of "provider::model" keys that can run
+# it (model key matches what Logos stores in settings.json; OpenRouter ids are
+# "group/model"). chat/terminal/browser hold every listed model (the filters
+# already require multimodal input + tools/tool_choice). vision is native
+# computer-use only, curated per vendor below.
+CUA_PROVIDERS = {'openai', 'anthropic', 'google'}
+CUA_MODEL_PATTERNS = {
+    'anthropic': r'^claude-',                                  # all current Claude models
+    'openai': r'(computer-use|gpt-5\.[6-9]|gpt-[6-9])',        # Responses "computer" tool
+    # Gemini 2.5+/3+, excluding lite / image-generation / nano-banana variants.
+    'google': r'^gemini-(?:2\.5|[3-9])(?![^\s]*?(?:lite|image|nano-banana))',
+}
+
+
+def _supported_modes(capability_provider: str, model_name: str) -> list:
+    """Modes a model can run, given its underlying provider (lowercase id)."""
+    modes = ['chat', 'terminal', 'browser']
+    pattern = CUA_MODEL_PATTERNS.get(capability_provider)
+    if pattern and re.search(pattern, model_name.lower()):
+        modes.append('vision')
+    return modes
+
 # --- Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -317,6 +341,25 @@ def update_model_list():
     if usable < 2:
         logging.error(f"Generated data looks like junk ({usable} usable providers), NOT writing {OUTPUT_FILE}.")
         return
+
+    # --- Per-mode capabilities block ---
+    # Built after validation (it is not a provider entry). Keys are exactly the
+    # ids Logos stores, so the app can do an O(1) membership test per mode.
+    mode_caps = {mode: [] for mode in ('chat', 'terminal', 'browser', 'vision')}
+    for provider_id, info in structured_data.items():
+        if provider_id == 'openrouter':
+            for group, models in (info.get('models_by_provider') or {}).items():
+                cap_provider = group.lower()
+                for name in models:
+                    key = f"openrouter::{group.lower()}/{name.lower().replace(' ', '-')}"
+                    for mode in _supported_modes(cap_provider, name):
+                        mode_caps[mode].append(key)
+        else:
+            for name in (info.get('models') or []):
+                for mode in _supported_modes(provider_id, name):
+                    mode_caps[mode].append(f"{provider_id}::{name}")
+    structured_data['mode_capabilities'] = {m: sorted(set(v)) for m, v in mode_caps.items()}
+    logging.info("mode_capabilities: " + ", ".join(f"{m}={len(v)}" for m, v in mode_caps.items()))
 
     # --- Save to File ---
     try:

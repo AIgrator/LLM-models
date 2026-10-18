@@ -158,6 +158,28 @@ def get_direct_api_model_name(model):
     # specific version from the slug.
     return base_slug_name
 
+def get_model_metadata(model):
+    """
+    Extracts the fields Logos shows in its model info panel (and uses for
+    context-overflow detection) from a raw OpenRouter catalogue entry:
+      context_window   - max input tokens (model['context_length'])
+      reasoning        - whether the model exposes a reasoning capability
+      input_modalities - e.g. ['text', 'image'] (falls back to parsing
+                         architecture.modality, e.g. 'text+image->text')
+    """
+    arch = model.get('architecture', {}) or {}
+    modalities = arch.get('input_modalities')
+    if not isinstance(modalities, list) or not modalities:
+        modality = arch.get('modality', '') or ''
+        left = modality.split('->')[0]
+        modalities = [m.strip() for m in left.split('+') if m.strip()]
+    params = set(model.get('supported_parameters', []) or [])
+    return {
+        "context_window": int(model.get('context_length') or 0),
+        "reasoning": bool(params & {"reasoning", "include_reasoning", "reasoning_effort"}),
+        "input_modalities": modalities,
+    }
+
 def update_model_list():
     """
     Fetches models from OpenRouter (including the "x-ai" provider entries),
@@ -267,6 +289,8 @@ def update_model_list():
             "models_by_provider": {}
         }
     }
+    # model_key -> {context_window, reasoning, input_modalities} (built alongside)
+    model_metadata = {}
 
     for model in sorted(final_models, key=lambda m: m.get('id')):
         provider_id = model.get('id').split('/')[0]
@@ -293,12 +317,11 @@ def update_model_list():
                 # canonical_slug ("grok-4.5-20260708"), which is an OpenRouter
                 # date pin invalid on the x.ai API. Hence id-base, not slug.
                 direct_api_name = model.get('id').split('/')[-1]
-                if _is_clean_name(direct_api_name):
-                    structured_data[direct_key]["models"].append(direct_api_name)
             else:
                 direct_api_name = get_direct_api_model_name(model)
-                if _is_clean_name(direct_api_name):
-                    structured_data[direct_key]["models"].append(direct_api_name)
+            if _is_clean_name(direct_api_name):
+                structured_data[direct_key]["models"].append(direct_api_name)
+                model_metadata[f"{direct_key}::{direct_api_name}"] = get_model_metadata(model)
 
         # 2. Populate OpenRouter's nested structure using the standard id
         openrouter_group = mapping.get('openrouter_group')
@@ -309,6 +332,8 @@ def update_model_list():
             model_name = model.get('id').split('/')[-1]
             if _is_clean_name(model_name):
                 structured_data["openrouter"]["models_by_provider"][openrouter_group].append(model_name)
+                or_key = f"openrouter::{openrouter_group.lower()}/{model_name.lower().replace(' ', '-')}"
+                model_metadata[or_key] = get_model_metadata(model)
 
     # --- Final Cleanup: Remove duplicates from direct provider lists ---
     for provider_key, provider_data in structured_data.items():
@@ -363,6 +388,14 @@ def update_model_list():
                     mode_caps['vision'].append(key)
     structured_data['mode_capabilities'] = {m: sorted(set(v)) for m, v in mode_caps.items()}
     logging.info("mode_capabilities: " + ", ".join(f"{m}={len(v)}" for m, v in mode_caps.items()))
+
+    # --- Per-model metadata block ---
+    # context window + reasoning + input modalities, keyed exactly like
+    # mode_capabilities so Logos can look any model up in O(1). Models that
+    # only come from the static fallbacks (not in the catalogue) are absent;
+    # Logos applies a safe default window for those.
+    structured_data['model_metadata'] = model_metadata
+    logging.info(f"model_metadata: {len(model_metadata)} entries")
 
     # --- Save to File ---
     try:

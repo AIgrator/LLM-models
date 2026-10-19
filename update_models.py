@@ -16,11 +16,13 @@ PROJECT_ROOT = Path(__file__).parent
 OUTPUT_FILE = PROJECT_ROOT / "models.json"
 
 # --- Step 1: Technical Filters ---
-# We want multimodal models that can process text and images. OpenRouter used
-# to report exactly "text+image->text", but flagship models now report extended
-# modalities like "text+image+file->text" or "text+image+file+audio+video->text".
-# So we check the modality *prefix* instead of exact equality.
-REQUIRED_MODALITY_PREFIX = "text+image"
+# Models must ACCEPT text AND images (text for chat/terminal/browser actions,
+# images so vision works), and must OUTPUT TEXT ONLY. Pure media-generation
+# models (image/video/audio, e.g. gemini-3-pro-image "Nano Banana") are useless
+# to us: every mode consumes text. So we reject any model whose OUTPUT
+# modalities include image/video/audio.
+REQUIRED_INPUT_MODALITIES = {"text", "image"}
+FORBIDDEN_OUTPUT_MODALITIES = {"image", "video", "audio"}
 
 # --- Step 2: Name-based Filters (Regular Expressions) ---
 # These patterns help exclude temporary, preview, or specialized models.
@@ -40,16 +42,22 @@ SPECIALIZED_PATTERN = re.compile(r'\b(codex|code|sql|translate|thinking)\b', re.
 # everything else lands in OpenRouter groups.
 # Blocklist for catalogue entries that are routers/aliases, not real models.
 BLOCKED_PROVIDERS = {'openrouter', 'typesafe'}
-# A minimum context length to filter out older or less capable models.
-MIN_CONTEXT_LENGTH = 32000
+# Minimum context length. Models below this are dropped: the agent needs a
+# large window to hold tool schemas + history, so we require at least 200k.
+MIN_CONTEXT_LENGTH = 200000
 # The model MUST support these parameters to be controllable by our
-# application for structured output and tool use. NOTE: "reasoning" was
-# dropped — it killed almost every flagship model (gemini/gpt-5/gemma have
-# tools+tool_choice but not always "reasoning"), and reasoning is a
-# nice-to-have, not a requirement for tool calling.
+# application for structured output and tool use.
 REQUIRED_PARAMETERS = {
     "tool_choice",
     "tools",
+}
+# The model MUST also expose a reasoning capability (any of these parameter
+# names counts). Reasoning is required so the agent can plan multi-step
+# terminal/browser actions.
+REQUIRED_REASONING_PARAMS = {
+    "reasoning",
+    "include_reasoning",
+    "reasoning_effort",
 }
 
 # --- Step 4: Manual Overrides ---
@@ -158,6 +166,27 @@ def get_direct_api_model_name(model):
     # specific version from the slug.
     return base_slug_name
 
+def get_modalities(model):
+    """Returns (input_modalities, output_modalities) as sets of strings.
+
+    Prefers the explicit architecture.input_modalities / output_modalities
+    lists; falls back to parsing architecture.modality ("in->out")."""
+    arch = model.get('architecture', {}) or {}
+    modality = arch.get('modality', '') or ''
+
+    inputs = arch.get('input_modalities')
+    if not isinstance(inputs, list) or not inputs:
+        left = modality.split('->')[0]
+        inputs = [m.strip() for m in left.split('+') if m.strip()]
+
+    outputs = arch.get('output_modalities')
+    if not isinstance(outputs, list) or not outputs:
+        right = modality.split('->')[-1]
+        outputs = [m.strip() for m in right.split('+') if m.strip()]
+
+    return set(inputs), set(outputs)
+
+
 def get_model_metadata(model):
     """
     Extracts the fields Logos shows in its model info panel (and uses for
@@ -204,7 +233,12 @@ def update_model_list():
         if not model_id:
             continue
 
-        if not model.get('architecture', {}).get('modality', '').startswith(REQUIRED_MODALITY_PREFIX):
+        input_modalities, output_modalities = get_modalities(model)
+        if not REQUIRED_INPUT_MODALITIES.issubset(input_modalities):
+            continue
+        if 'text' not in output_modalities:
+            continue
+        if output_modalities & FORBIDDEN_OUTPUT_MODALITIES:
             continue
         if DATE_PATTERN.search(model_id) or PREVIEW_PATTERN.search(model_id) or SPECIALIZED_PATTERN.search(model_id):
             continue
@@ -234,7 +268,10 @@ def update_model_list():
         if model.get('context_length', 0) < MIN_CONTEXT_LENGTH:
             continue
 
-        if not REQUIRED_PARAMETERS.issubset(set(model.get('supported_parameters', []))):
+        params = set(model.get('supported_parameters', []) or [])
+        if not REQUIRED_PARAMETERS.issubset(params):
+            continue
+        if not (params & REQUIRED_REASONING_PARAMS):
             continue
 
         passed_models.append(model)

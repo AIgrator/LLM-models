@@ -187,14 +187,50 @@ def get_modalities(model):
     return set(inputs), set(outputs)
 
 
+# Canonical ordering of effort levels used by the app's model picker. Values
+# the catalogue reports but this list does not know yet are kept after the
+# known ones, so a new level is not silently dropped.
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def get_reasoning_efforts(model):
+    """Supported reasoning efforts and the default one.
+
+    Returns ``(None, "")`` when the catalogue does not describe them for this
+    model (the app then hides the effort control). The default is returned
+    only when it is one of the supported levels.
+    """
+    reasoning = model.get('reasoning') or {}
+    raw = reasoning.get('supported_efforts')
+    if not isinstance(raw, list):
+        return None, ""
+
+    efforts = []
+    for value in raw:
+        effort = str(value or "").strip().lower()
+        if effort and effort not in efforts:
+            efforts.append(effort)
+    if not efforts:
+        return None, ""
+
+    rank = {name: index for index, name in enumerate(EFFORT_ORDER)}
+    efforts.sort(key=lambda name: (rank.get(name, len(rank)), name))
+
+    default = str(reasoning.get('default_effort') or "").strip().lower()
+    return efforts, default if default in efforts else ""
+
+
 def get_model_metadata(model):
     """
     Extracts the fields Logos shows in its model info panel (and uses for
     context-overflow detection) from a raw OpenRouter catalogue entry:
-      context_window   - max input tokens (model['context_length'])
-      reasoning        - whether the model exposes a reasoning capability
-      input_modalities - e.g. ['text', 'image'] (falls back to parsing
-                         architecture.modality, e.g. 'text+image->text')
+      context_window    - max input tokens (model['context_length'])
+      reasoning         - whether the model exposes a reasoning capability
+      reasoning_efforts - effort levels accepted for reasoning, in canonical
+                          order (present only when the catalogue reports them)
+      default_effort    - catalogue default level (present only when valid)
+      input_modalities  - e.g. ['text', 'image'] (falls back to parsing
+                          architecture.modality, e.g. 'text+image->text')
     """
     arch = model.get('architecture', {}) or {}
     modalities = arch.get('input_modalities')
@@ -203,11 +239,17 @@ def get_model_metadata(model):
         left = modality.split('->')[0]
         modalities = [m.strip() for m in left.split('+') if m.strip()]
     params = set(model.get('supported_parameters', []) or [])
-    return {
+    metadata = {
         "context_window": int(model.get('context_length') or 0),
         "reasoning": bool(params & {"reasoning", "include_reasoning", "reasoning_effort"}),
         "input_modalities": modalities,
     }
+    efforts, default_effort = get_reasoning_efforts(model)
+    if efforts:
+        metadata["reasoning_efforts"] = efforts
+        if default_effort:
+            metadata["default_effort"] = default_effort
+    return metadata
 
 def update_model_list():
     """
